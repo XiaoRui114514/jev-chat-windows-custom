@@ -17,6 +17,9 @@ python -m pip install -r requirements.txt pyinstaller || goto :fail
 echo Building ...
 pyinstaller --noconfirm --clean jev.spec || goto :fail
 
+echo Checking packaged startup ...
+python tools\verify_frozen.py dist\jev-chat-windows\jev-chat-windows.exe || goto :fail
+
 echo.
 echo Build OK.
 echo   %cd%\dist\jev-chat-windows\jev-chat-windows.exe

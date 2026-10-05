@@ -8,6 +8,13 @@
 """
 import ctypes
 import multiprocessing
+import sys
+
+if __name__ == "__main__" and len(sys.argv) == 3 and sys.argv[1] == "--smoke-test":
+    multiprocessing.freeze_support()
+    from app.smoke import run
+    raise SystemExit(run(sys.argv[2]))
+
 import queue
 import threading
 import traceback

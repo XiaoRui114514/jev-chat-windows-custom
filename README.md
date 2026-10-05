@@ -73,10 +73,16 @@ tests/               设置迁移、Provider、解析、媒体开关和 Engine �
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m compileall -q app core main.py
 pyinstaller --noconfirm --clean jev.spec
+.\.venv\Scripts\python.exe tools/verify_frozen.py dist/jev-chat-windows/jev-chat-windows.exe
 ```
 
 `jev.spec` 使用 onedir 打包，显式收集 OCR、Qt、模型 SDK 和新增识别模块。CI 配置在
 `.github/workflows/release.yml`，tag 发布会构建 Windows zip。
+
+v0.2.1 修复启动时 `DLL load failed while importing QtCore: 找不到指定的程序`：打包时隔离
+DLL 搜索路径，避免把 Poppler 等其他工具的同名 `icuuc.dll` 收进程序。Windows 系统 ICU
+由操作系统提供。构建和 CI 在压缩发布前会实际启动 exe，验证主界面、设置页、调试窗和
+离线 OCR；检查过程不采集微信、不联网、不读写用户配置或密钥。
 
 ## 已知限制
 

@@ -2,7 +2,20 @@
 """PyInstaller 打包定义，CI（.github/workflows/release.yml）和 build.bat 共用这一份。
 onedir 不是 onefile：PySide6 + onnxruntime 打出来 ~150MB，onefile 每次启动都要解压一遍，慢且占临时盘。
 只在 Windows 上跑，下面的 collect_all 也只认 Windows 上装好的那几个包。"""
+import os
+import sys
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_all
+
+# Resolve DLLs only from this Python installation and Windows. An inherited
+# PATH can contain Poppler's ICU DLL, whose exports do not match Windows ICU
+# used by QtCore. Package hooks still locate each wheel's own DLLs directly.
+windows = Path(os.environ["SystemRoot"])
+os.environ["PATH"] = os.pathsep.join(str(path) for path in (
+    Path(sys.executable).parent, Path(sys.base_prefix),
+    Path(sys.base_prefix) / "DLLs", windows / "System32", windows,
+))
 
 NAME = "jev-chat-windows"
 
@@ -10,7 +23,7 @@ hiddenimports = [
     # spawn 出来的采集子进程按名字 import app.worker，再顺着它拉 capture/ocr；
     # 父进程这边 engine 也是运行时才走到，一并钉死，别指望静态分析都能扫出来
     "app.worker", "app.capture", "app.ocr", "app.fill", "app.overlay", "app.settings",
-    "app.version", "app.update", "app.debugwin",  # debugwin 是开了调试视图才 import 的
+    "app.version", "app.update", "app.debugwin", "app.smoke",  # optional startup checks
     "core.engine", "core.draft", "core.jev_client", "core.questions", "core.providers",
     "core.providers.base", "core.providers.registry", "core.providers.openrouter",
     "core.providers.typesafe", "core.providers.custom_openai", "core.providers.custom_typesafe",

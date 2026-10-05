@@ -32,6 +32,9 @@ jobs:
       - name: 打包
         run: pyinstaller --noconfirm --clean jev.spec
 
+      - name: 验证成品启动、Qt 窗口与离线 OCR
+        run: python tools/verify_frozen.py dist/jev-chat-windows/jev-chat-windows.exe
+
       - name: 压 zip（tag 用 tag 名，手动触发用短 SHA）
         id: pack
         shell: pwsh
