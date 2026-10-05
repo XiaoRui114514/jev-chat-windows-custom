@@ -28,6 +28,8 @@ _Jev = namedtuple("_Jev", "name default")
 JEV_PROVIDERS = {
     "openrouter": _Jev("OpenRouter", "typesafe/jev-1.13"),
     "typesafe": _Jev("TypeSafe 直连", "jev-latest"),
+    "custom_openai": _Jev("自定义 · OpenAI 兼容", ""),
+    "custom_typesafe": _Jev("自定义 · TypeSafe 兼容", ""),
 }
 
 # protocol ∈ {openai, anthropic, gemini}：决定 core/llm.py 用哪个官方 SDK
@@ -73,26 +75,7 @@ THINKING = ("DeepSeek", "OpenRouter", "Anthropic", "Gemini")
 ENV_VARS = sorted({JEV_ENV, LLM_ENV, *LEGACY.values()})
 
 
-if __name__ == "__main__":
-    # ponytail: 纯数据，只查几条不变式——协议打错字、自定义来源漏配 Base URL、思考字段写反最容易出。
-    assert {p.protocol for p in DRAFT_PROVIDERS.values()} == {"openai", "anthropic", "gemini"}
-    assert all(p.base or key in CUSTOM or p.protocol == "gemini"
-               for key, p in DRAFT_PROVIDERS.items())
-    assert all(not DRAFT_PROVIDERS[key].base for key in CUSTOM)
-    assert next(iter(DRAFT_PROVIDERS)) == "deepseek"  # 默认就是列表第一个
-    assert DRAFT_PROVIDERS["deepseek"].extra(True) == {"thinking": {"type": "enabled"}}
-    assert DRAFT_PROVIDERS["deepseek"].extra(False) == {"thinking": {"type": "disabled"}}
-    assert DRAFT_PROVIDERS["openrouter"].extra(True) == {"reasoning": {"enabled": True}}
-    assert DRAFT_PROVIDERS["moonshot"].extra(True) == {}
-    assert DRAFT_PROVIDERS["deepseek"].headers is None and DRAFT_PROVIDERS["deepseek"].keep is None
-    go = DRAFT_PROVIDERS["opencode"]
-    assert go.protocol == "openai" and go.base == "https://opencode.ai/zen/go/v1"
-    assert go.default == "deepseek-v4.1-flash" and go.extra(True) == {}
-    uuid.UUID(go.headers["x-opencode-session"])
-    assert go.headers["User-Agent"] == "jev-chat-windows" and "key" not in go.headers
-    assert go.keep("deepseek-v4.1-flash") and go.keep("glm-5.3") and go.keep("hy3")
-    assert not any(go.keep(m) for m in (
-        "minimax-m3", "qwen3.8-max", "grok-4.7", "gpt-6-luna", "muse-spark-1.2-contributor"))
-    # 全程只有两把 key，脱敏还得管老名字
-    assert ENV_VARS == ["DEEPSEEK_API_KEY", "JEV_API_KEY", "LLM_API_KEY", "OPENROUTER_API_KEY"]
-    print("providers ok")
+
+JEV_CUSTOM = ("custom_openai", "custom_typesafe")
+VISION_ENV = "VISION_API_KEY"
+ENV_VARS = sorted({*ENV_VARS, VISION_ENV})

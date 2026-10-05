@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import urllib.request
 
-_API = "https://api.github.com/repos/jev-chat/jev-chat-windows/releases/latest"
+_API = "https://api.github.com/repos/XiaoRui114514/jev-chat-windows-custom/releases/latest"
 
 
 def parse_version(v: str) -> tuple[int, ...] | None:

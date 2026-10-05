@@ -54,3 +54,10 @@ the Windows release package as a whole is bound by GPLv3 terms. Commercial
 users must obtain that license themselves or replace the component; this
 project does not do so on your behalf and makes no guarantee about the
 package's suitability for commercial use.
+
+
+## Custom fork attribution
+JevChat Custom is a source-based derivative of jev-chat/jev-chat-windows v0.1.12.
+Custom decision functionality is adapted from XiaoRui114514/jev-chat-windows-custom-jev.
+Copyright (c) 2026 XiaoRui114514 and custom fork contributors.
+Original attribution and third-party license requirements above remain applicable.

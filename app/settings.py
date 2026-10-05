@@ -10,9 +10,13 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import threading
+import logging
+from pathlib import Path
+
 import sys  # 只为下面这一处：打包后 __file__ 指向临时解包目录，config.json 得放在 exe 旁边才存得住
 
-from core.providers import CUSTOM, DRAFT_PROVIDERS, JEV_ENV, JEV_PROVIDERS, LEGACY, LLM_ENV
+from core.providers import CUSTOM, DRAFT_PROVIDERS, JEV_CUSTOM, JEV_ENV, JEV_PROVIDERS, LEGACY, LLM_ENV, VISION_ENV
 
 _ROOT = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
          else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,14 +27,53 @@ _DEFAULT_JEV = "openrouter"
 _DEFAULT_DRAFT = "deepseek"
 
 
+_LOCK = threading.RLock()
+_CACHE = {}
+_STAMP = None
+RECOGNITION_DEFAULTS = {"video_channel": False, "article": False, "image": False,
+                        "sticker": False, "emoji_intent": False, "ocr_small_text": False}
+
+def load_config():
+    global _CACHE, _STAMP
+    with _LOCK:
+        path = Path(_CONFIG)
+        try:
+            stamp = (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+        except FileNotFoundError:
+            return {"schema_version": 2, "recognition": dict(RECOGNITION_DEFAULTS)}
+        if stamp != _STAMP:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+                if not isinstance(data, dict):
+                    raise ValueError("configuration must be an object")
+            except (OSError, ValueError) as exc:
+                raise ValueError("配置文件无法读取，请修复 config.json；原文件未被覆盖") from exc
+            recognition = data.get("recognition")
+            recognition = recognition if isinstance(recognition, dict) else {}
+            data["recognition"] = {**RECOGNITION_DEFAULTS, **recognition}
+            data["schema_version"] = 2
+            # Legacy plugin fields already use jev_provider/jev_model/jev_base_url.
+            data.setdefault("lang", data.get("language", "zh"))
+            _CACHE, _STAMP = data, stamp
+        return {**_CACHE, "recognition": dict(_CACHE["recognition"])}
+
 def _read(name: str, default=None):
-    """读 config.json 里的一个字段；每次都重新读文件，改设置不用重启进程。"""
-    try:
-        with open(_CONFIG, encoding="utf-8") as f:
-            value = json.load(f).get(name)
-    except (OSError, ValueError):
-        return default
+    value = load_config().get(name)
     return default if value is None else value
+
+def recognition():
+    data = load_config()["recognition"]
+    return {key: data.get(key) is True for key in RECOGNITION_DEFAULTS}
+
+def vision_config():
+    data = _read("vision", {})
+    if not isinstance(data, dict):
+        data = {}
+    return {"base_url": str(data.get("base_url") or ""), "model": str(data.get("model") or ""),
+            "api_key": _read_env(VISION_ENV), "provider": "custom_openai"}
+
+def jev_base_url():
+    return str(_read("jev_base_url") or "") if jev_provider() in JEV_CUSTOM else ""
 
 def relationship() -> str:
     return str(_read("relationship") or _DEFAULT_RELATIONSHIP)
@@ -101,7 +144,7 @@ def _read_env(env_name: str) -> str:
 
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
                 v = str(winreg.QueryValueEx(k, env_name)[0]).strip()
-        except Exception:  # 非 Windows / 没这个值
+        except (ImportError, OSError):  # 非 Windows / 没这个值
             v = ""
         if v:
             os.environ[env_name] = v
@@ -109,7 +152,7 @@ def _read_env(env_name: str) -> str:
 
 def _get_key(env_name: str) -> str:
     """两把 key 之一。新名字空着就退回老版本按来源存的变量（下次保存会抄进新名字）。"""
-    return _read_env(env_name) or _read_env(LEGACY[env_name])
+    return _read_env(env_name) or (_read_env(LEGACY[env_name]) if env_name in LEGACY else "")
 
 def _set_key(env_name: str, value: str) -> None:
     """只写进程环境 + HKCU\\Environment，不写任何文件。"""
@@ -119,8 +162,10 @@ def _set_key(env_name: str, value: str) -> None:
 
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
             winreg.SetValueEx(k, env_name, 0, winreg.REG_SZ, value)
-    except Exception:
-        pass  # 非 Windows（本机 Mac 开发）走不到，忽略
+    except ImportError:
+        logging.getLogger(__name__).debug("Registry unavailable; key saved in process environment")
+    except OSError as exc:
+        raise OSError("密钥未能保存到用户环境变量") from exc
 
 
 def _notify_env() -> None:
@@ -132,8 +177,8 @@ def _notify_env() -> None:
         fn.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_wchar_p)
         fn.restype = ctypes.c_int
         fn(0xFFFF, 0x001A, 0, "Environment")  # HWND_BROADCAST, WM_SETTINGCHANGE
-    except Exception:
-        pass
+    except AttributeError:
+        logging.getLogger(__name__).debug("Environment notification unavailable")
 
 def jev_key() -> str:
     """判断那把 key，两家来源共用。"""
@@ -158,13 +203,15 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
          draft_base_url_text: str | None = None, reply_target_on: bool | None = None,
          style_text: str | None = None, thinking_on: bool | None = None,
          check_update_on: bool | None = None, debug_view_on: bool | None = None,
-         lang_text: str | None = None) -> None:
+         lang_text: str | None = None, jev_base_url_text: str | None = None,
+         recognition_options: dict | None = None, vision_options: dict | None = None,
+         vision_key_text: str | None = None) -> None:
     """每个参数为空/None = 保留当前值。两把 key 写进程环境 + HKCU\\Environment，不写任何文件。"""
     jev = jev_provider_text if jev_provider_text in JEV_PROVIDERS else jev_provider()
     draft = draft_provider_text if draft_provider_text in DRAFT_PROVIDERS else draft_provider()
     # 没重填就把老变量里的值抄进新名字，迁移一次性做完（_get_key 已经退回读过老的了）
     wrote_key = False
-    for env, typed in ((JEV_ENV, jev_key_text), (LLM_ENV, llm_key_text)):
+    for env, typed in ((JEV_ENV, jev_key_text), (LLM_ENV, llm_key_text), (VISION_ENV, vision_key_text)):
         value = typed or ("" if _read_env(env) else _get_key(env))
         if value:
             _set_key(env, value)
@@ -178,10 +225,12 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
     # 整个 dict 必须在 open(..., "w") **之前**拼好：open 一上来就把文件截断，
     # 之后再 _read() 读到的是空文件，None 那几项就不是「保留」而是被清空了。
     data = {
+        **load_config(),
         # 关系为空 = 只改别的开关（调试视图那种单项保存），别把它写没了
         "relationship": relationship_text or relationship(), "context": n,
         "style": keep(style_text, "style"),
         "jev_provider": jev, "jev_model": keep(jev_model_text, "jev_model"),
+        "jev_base_url": keep(jev_base_url_text, "jev_base_url"),
         "draft_provider": draft, "draft_model": keep(draft_model_text, "draft_model"),
         "draft_base_url": keep(draft_base_url_text, "draft_base_url"),
         "reply_target": flag(reply_target_on, reply_target),
@@ -192,5 +241,12 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
     lang = _read("lang") if lang_text is None else lang_text.strip().lower()
     if lang is not None:
         data["lang"] = lang
-    with open(_CONFIG, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    if recognition_options is not None:
+        data["recognition"] = {**data["recognition"],
+            **{k: v is True for k, v in recognition_options.items() if k in RECOGNITION_DEFAULTS}}
+    if vision_options is not None:
+        data["vision"] = {k: str(vision_options.get(k) or "").strip() for k in ("base_url", "model")}
+    with _LOCK:
+        temp = Path(_CONFIG).with_suffix(".json.tmp")
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temp, _CONFIG)

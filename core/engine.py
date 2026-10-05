@@ -27,7 +27,7 @@ def analyze(messages: list, relationship: str, model: str | None = None,
             timeout: float = 30, context: int = 10, provider: str = "deepseek",
             base_url: str | None = None, reply_to: str | None = None, style: str = "",
             thinking: bool = False, jev_provider: str = "openrouter",
-            jev_model: str | None = None) -> dict:
+            jev_model: str | None = None, jev_base_url: str | None = None) -> dict:
     """messages: [(from, text)] from ∈ {her, me}，最新一条在最后；
     群聊里可以带第三项 name（说这句话的人），单聊不带。
     context: 起草和判断各看最近多少条消息（用户设置里的「参考上下文」）。
@@ -49,14 +49,15 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     usage: dict = {}
     answers: dict = {}
     judged = False
+    diagnostics = []
     try:
         first = ask(state, dict(JUDGE_QUESTIONS), timeout=timeout,
-                    provider=jev_provider, model=jev_model)
+                    provider=jev_provider, model=jev_model, base_url=jev_base_url)
         answers = first.get("answers") or {}
         _add_usage(usage, first.get("usage"))
         judged = True
-    except JevError:
-        pass  # 退回盲起草 + 老的一次合问；错误不打日志（里面可能带请求内容）
+    except JevError as exc:
+        diagnostics.append({"stage": "judge", "status": exc.status, "error": str(exc)})
 
     candidates = draft_candidates(messages, relationship, provider=provider, model=model,
                                   base_url=base_url, timeout=timeout, keep=context,
@@ -71,8 +72,9 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     if questions:
         try:
             second = ask(state, questions, timeout=timeout,
-                         provider=jev_provider, model=jev_model)
-        except JevError:
+                         provider=jev_provider, model=jev_model, base_url=jev_base_url)
+        except JevError as exc:
+            diagnostics.append({"stage": "rank", "status": exc.status, "error": str(exc)})
             if not judged:  # 老路只有这一次调用，挂了就是挂了
                 raise
             second = {}  # 判断还在，只是没排上序：下面按第一条推荐
@@ -100,6 +102,7 @@ def analyze(messages: list, relationship: str, model: str | None = None,
         "answers": answers,
         "usage": usage,
         "reply_to": reply_to,
+        "diagnostics": diagnostics,
     }
 
 
