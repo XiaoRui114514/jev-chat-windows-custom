@@ -8,6 +8,10 @@ import numpy as np
 from rapidocr_onnxruntime import RapidOCR
 
 from app.chatapps import DEFAULT, ChatApp
+from core.ocr import clean_text, dominant_color, prepare
+from core.message import Message
+from core.message.tracker import MessageTracker
+from core.parser import WeChatParser
 
 _ENGINES: dict = {}   # backend name -> engine, shared per process
 _FELL_BACK = set()    # backends that failed once; don't retry every frame
@@ -59,9 +63,8 @@ def who_said(chat, box, app: ChatApp = DEFAULT):
     reg = chat[int(min(ys)):int(max(ys)), int(min(xs)):int(max(xs))].astype(int)
     if reg.size == 0:
         return None, None, 0
-    vals, cnt = np.unique(reg.reshape(-1, 3), axis=0, return_counts=True)
-    bg = vals[cnt.argmax()]
-    if cnt.max() / reg.shape[0] / reg.shape[1] < 0.45:
+    bg, fraction = dominant_color(reg)
+    if fraction < 0.45:
         # 文字必须落在平底色上：WGC 帧是精确像素，气泡/面板里众数颜色占 0.56~0.82，
         # 头像/照片/表情包里只有 0.1~0.3——那是图片里的字（头像上的「借仲夏夜之梦」之类），不是消息。
         # ponytail: 只对精确像素的帧成立；缩放/压缩过的截图（比如拿预览窗再截一次的图）底色会糊成几百种颜色，全会被当图片。
@@ -93,29 +96,48 @@ class Reader:
         self.seen = []  # [(who, name, text)]，累计，封顶 500
         self.last_boxes = []  # 调试视图用：[(x0,y0,x1,y1,kind,text)]，消息区裁剪坐标
         self.last_ms = 0  # 上一帧 OCR 耗时
+        self.parser = WeChatParser(app)
+        self.tracker = MessageTracker()
+        self.last_messages = []
+        self.last_crops = {}
+        self.parser_ms = 0
 
-    def read(self, chat, pane_bg):
+    def read(self, chat, pane_bg, options=None):
         """→ [(who, name, text, y)]，同一气泡的多行已合并。who ∈ me/her；name 群聊里是发言人，单聊 None。
         顺带把每个框的分类记进 self.last_boxes（调试视图画框用，几十个 tuple，不开也不亏）。"""
         skip = self.app.trim_top(chat)   # 群聊置顶公告等：不是消息，整块跳过
         if skip:
             chat = chat[skip:]
         t0 = time.perf_counter()
-        res, _ = self.ocr(chat, use_cls=False)
+        options = options or {}
+        prepared, scale = prepare(chat, options.get("ocr_small_text", False))
+        res, _ = self.ocr(prepared, use_cls=False)
+        res = [(np.asarray(box)/scale, clean_text(text), score) for box, text, score in (res or [])]
+        self.last_crops = {}
+        self.last_messages = []
+        started = time.perf_counter()
+        if self.app.key == "wechat":
+            parsed, consumed = self.parser.parse(chat, pane_bg, res)
+            self.last_messages = parsed
+        else:
+            parsed, consumed = [], set()
+        self.parser_ms = int((time.perf_counter()-started)*1000)
         self.last_ms = int((time.perf_counter() - t0) * 1000)
-        self.last_boxes = []
+        self.last_boxes = list(self.parser.boxes) if self.app.key == "wechat" else []
         W = chat.shape[1]
         # 群聊：每条 her 气泡上方一行灰色发言人名（靠左、短、不带冒号、印在面板底色上），从上往下扫，名字带给后面的气泡。
         # 引用块/时间戳/公告带冒号，链接卡片灰字印在气泡底色上，都不会被当成名字。
         # ponytail: 名字行被 OCR 漏掉时会挂到上一个人头上。
         name, raw = None, []
-        for box, text, _ in sorted(res or [], key=lambda r: r[0][0][1]):
+        for index, (box, text, score) in sorted(enumerate(res), key=lambda r: r[1][0][0][1]):
+            if index in consumed:
+                continue
             kind, bg, h = who_said(chat, box, self.app)
             xs, ys = [p[0] for p in box], [p[1] for p in box]
             rect = (int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)))
             # 印在面板底色上的字都不是消息：气泡自带底色。微信的发言人名是灰字，
             # KakaoTalk 的是深色（对比度跟正文一样），所以不能只看 kind == "gray"。
-            on_pane = np.abs(bg - pane_bg).sum() <= 6
+            on_pane = bg is not None and np.abs(bg - pane_bg).sum() <= 24
             if kind == "gray" or (on_pane and kind == "her"):
                 taken = bool(on_pane and box[0][0] < 0.25 * W and len(text) <= 16
                              and not re.search("[:：]", text))
@@ -128,7 +150,7 @@ class Reader:
                 self.last_boxes.append(rect + ("image" if kind is None else "tiny", text))
                 continue
             self.last_boxes.append(rect + (kind, text))
-            raw.append((kind, name if kind == "her" else None, text, box[0][1], box[2][1], h))
+            raw.append((kind, None, text, box[0][1], box[2][1], h, score, rect))
         if not self.lh and len(raw) >= 3:
             self.lh = float(np.median([r[5] for r in raw]))
         # 同一气泡的多行合并：同人、上一行底到这一行顶的间距不到半个字高（不同气泡之间至少隔一个字高）
@@ -139,7 +161,27 @@ class Reader:
                 lines[-1][4] = bottom
             else:
                 lines.append([who, nm, text, top, bottom])
-        return [(w, n, t, y) for w, n, t, y, _ in lines]
+        # Fallback retains ordinary OCR for old layouts/KakaoTalk. It is marked less certain.
+        for who, nm, text, top, bottom in lines:
+            matches = [r for r in raw if top <= r[3] <= bottom]
+            bounds = (min(r[7][0] for r in matches), int(top), max(r[7][2] for r in matches), int(bottom))
+            self.last_messages.append(Message(who, text, "text", nm, bounds=bounds,
+                ocr_confidence=min(r[6] for r in matches), sender_confidence=.76,
+                type_confidence=.8, metadata={"layout": "OCR fallback; sender name unknown"}).identify())
+        self.last_messages.sort(key=lambda m: m.bounds[1])
+        for m in self.last_messages:
+            if skip:
+                x0, y0, x1, y1 = m.bounds
+                m.bounds = (x0, y0+skip, x1, y1+skip)
+            if m.type in ("image", "sticker", "gif", "video_channel", "article", "link"):
+                x0, y0, x1, y1 = (m.bounds[0], m.bounds[1]-skip, m.bounds[2], m.bounds[3]-skip)
+                crop = chat[max(0,y0):min(chat.shape[0],y1), max(0,x0):min(chat.shape[1],x1)]
+                if crop.size:
+                    self.last_crops[m.id] = np.ascontiguousarray(crop)
+        return [(m.sender, m.name, m.text or "["+m.type+"]", m.bounds[1]) for m in self.last_messages]
+
+    def new_messages(self):
+        return self.tracker.new(self.last_messages)
 
     def new_lines(self, lines):
         """去重（滚动不重复）→ 这一帧里真正新出现的 [(who, name, text)]。

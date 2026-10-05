@@ -11,6 +11,12 @@ import multiprocessing
 import queue
 import threading
 import traceback
+import time
+from core.media import MediaAnalyzer
+from core.emoji.intent import EmojiIntentAnalyzer
+from core.message.context import engine_messages, transcript
+from core.providers import DRAFT_PROVIDERS
+from core.errors import redact_secrets
 from collections import deque
 
 from app import settings, update, worker
@@ -25,6 +31,8 @@ from app.i18n import T
 # history 里是 [(who, text, name)]，engine 只认 her/me，name 是群里的发言人（单聊/自己说的是 None）；
 # 只是缓冲区，实际喂模型几条由设置里的「参考上下文」决定
 # senders：这个群里发过言的人，去重、最近的排最前；target：用户挑的回复对象（None = 跟着最近那个走）
+media_analyzer = MediaAnalyzer()
+emoji_analyzer = EmojiIntentAnalyzer()
 chats = {}
 state = {"area": None, "busy": False, "rerun": None, "hwnd": None, "chat": ""}
 results = queue.Queue()
@@ -33,7 +41,7 @@ update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, 
 
 def chat_of(title):
     return chats.setdefault(title, {"history": deque(maxlen=60), "result": None, "rev": 0,
-                                    "target": None, "senders": []})
+                                    "target": None, "senders": [], "crops": {}})
 
 
 def target_of(title):
@@ -111,20 +119,29 @@ def on_toggle_capture(on):
     capture_on.set()
 
 
-def analyze_bg(msgs, title, revision, reply_to=None):
-    """后台线程只跑网络调用，结果丢队列；UI 只在主线程的 tick 里动（Qt 不能跨线程碰）。"""
+def analyze_bg(msgs, title, revision, reply_to=None, crops=None):
+    """All remote work is off the Qt thread. Optional failures preserve local messages."""
+    started = time.perf_counter()
     try:
-        results.put(("ok", analyze(msgs, settings.relationship(), context=settings.context(),
-                                   model=settings.draft_model() or None,
-                                   provider=settings.draft_provider(),
-                                   base_url=settings.draft_base_url() or None,
-                                   reply_to=reply_to, style=settings.style(),
-                                   thinking=settings.thinking(),
-                                   jev_provider=settings.jev_provider(),
-                                   jev_model=settings.jev_model() or None),
-                     title, revision))
-    except Exception as e:
-        results.put(("err", f"{T('分析失败: ')}{e}", title, revision))
+        options = settings.recognition()
+        enriched, stats = media_analyzer.enrich(msgs, crops or {}, options, settings.vision_config())
+        provider = settings.draft_provider()
+        spec = DRAFT_PROVIDERS[provider]
+        enriched, intent_stats = emoji_analyzer.enrich(enriched, options["emoji_intent"],
+            {"protocol": spec.protocol, "base_url": settings.draft_base_url() or spec.base,
+             "api_key": settings.llm_key(), "model": settings.draft_model(),
+             "headers": spec.headers}, keep=settings.context())
+        stats.update(intent_stats)
+        result = analyze(engine_messages(enriched), settings.relationship(), context=settings.context(),
+            model=settings.draft_model() or None, provider=provider,
+            base_url=settings.draft_base_url() or None, reply_to=reply_to, style=settings.style(),
+            thinking=settings.thinking(), jev_provider=settings.jev_provider(),
+            jev_model=settings.jev_model() or None, jev_base_url=settings.jev_base_url() or None)
+        result["recognition"] = {**stats, "context": transcript(enriched[-settings.context():]),
+                                 "messages": enriched, "total_ms": int((time.perf_counter()-started)*1000)}
+        results.put(("ok", result, title, revision))
+    except Exception as exc:
+        results.put(("err", f"{T('分析失败: ')}{redact_secrets(str(exc))}", title, revision))
 
 
 def check_update_bg():
@@ -145,7 +162,8 @@ def start_analyze(title, msgs):
     state["busy"] = True
     ov.set_busy(True)
     reply_to = target_of(title) if settings.reply_target() else None  # 开关关着就是今天的行为
-    threading.Thread(target=analyze_bg, args=(msgs, title, chat_of(title)["rev"], reply_to),
+    crops = dict(chat_of(title)["crops"])
+    threading.Thread(target=analyze_bg, args=(msgs, title, chat_of(title)["rev"], reply_to, crops),
                      daemon=True).start()
 
 
@@ -154,7 +172,7 @@ def on_target_change(title, name):
     chat = chat_of(title)
     chat["target"] = name
     msgs = list(chat["history"])
-    if not any(m[0] == "her" for m in msgs):
+    if not any(m.get("from") == "her" for m in msgs):
         return
     if state["busy"]:
         state["rerun"] = (title, msgs)
@@ -207,21 +225,28 @@ def drain():
                 child.join()
                 child = None
             continue
-        _, title, new, area = msg
+        _, title, new, area, crops = msg
         state["area"] = area
         chat = chat_of(title)
         chat["rev"] += 1  # 这个会话有新消息了，它在跑的分析作废
         if title == ov.current_chat():  # 看的是别的会话就别把人家的候选划掉
             ov.invalidate_replies()
-        for who, name, text in new:
-            chat["history"].append((who, text, name))
+        chat["crops"].update(crops)
+        for message in new:
+            who, name, text = message["from"], message.get("name"), message.get("text") or "["+message["type"]+"]"
+            chat["history"].append(message)
             ov.log_message(who, text, name, chat=title)
-            if who == "her" and name:  # 群里发过言的人，去重后最近的排最前
+            if who == "her" and name:
                 if name in chat["senders"]:
                     chat["senders"].remove(name)
                 chat["senders"].insert(0, name)
+        # Keep only a small recent crop buffer; images are never persisted.
+        recent_ids = {m["id"] for m in list(chat["history"])[-settings.context():]}
+        chat["crops"] = {k: v for k, v in chat["crops"].items() if k in recent_ids}
+        while len(chat["crops"]) > 12:
+            del chat["crops"][next(iter(chat["crops"]))]
         ov.set_targets(title, chat["senders"], target_of(title))  # 显不显示这一行由悬浮窗按开关决定
-        if new[-1][0] == "her":  # 只有对方最新说话才值得分析
+        if new[-1]["from"] == "her":  # 只有对方最新说话才值得分析
             msgs = list(chat["history"])
             if state["busy"]:
                 state["rerun"] = (title, msgs)
@@ -251,6 +276,8 @@ def tick():
                 ov.set_busy(False)
                 continue
             if kind == "ok":
+                if dbg is not None and title == state["chat"]:
+                    dbg.show_analysis(r.get("recognition", {}), r.get("diagnostics", []))
                 chat_of(title)["result"] = r  # 先存着；正看着这个会话才立刻贴上去
                 if title == ov.current_chat():
                     ov.show(r)

@@ -8,7 +8,8 @@ import traceback
 
 import numpy as np
 
-from app import chatapps
+from app import chatapps, settings
+from core.media import selected
 from app.capture import Capture, chat_area, unminimize
 from app.ocr import Reader, read_title, similar
 
@@ -28,7 +29,9 @@ def _packet(full, area, title, reader, lines):
             "pane_top": int(area[5]) if area else 0, "title": title,
             "boxes": reader.last_boxes if reader else [],
             "lines": [(w, n, t) for w, n, t, _ in lines],
-            "ocr_ms": reader.last_ms if reader else 0, "ts": time.time()}
+            "ocr_ms": reader.last_ms if reader else 0, "ts": time.time(),
+            "parser_ms": reader.parser_ms if reader else 0,
+            "messages": [m.to_dict() for m in reader.last_messages] if reader else []}
 
 
 def run(q, hwnd, enabled, debug_on, app_key=None):
@@ -90,10 +93,17 @@ def run(q, hwnd, enabled, debug_on, app_key=None):
                             title = name
                             q.put(("chat", title))
                     reader = readers.setdefault(title, Reader(app))
-                    lines = reader.read(full[y0:y1, x0:x1], bg)
-                    new = reader.new_lines(lines)
+                    options = settings.recognition()
+                    lines = reader.read(full[y0:y1, x0:x1], bg, options)
+                    new = reader.new_messages()
                     if new:
-                        q.put(("lines", title, new, rect))
+                        messages = [m.to_dict() for m in new]
+                        crops = {}
+                        for m in messages:
+                            if selected(m, options) and m["id"] in reader.last_crops:
+                                crop = reader.last_crops[m["id"]]
+                                crops[m["id"]] = {"w": crop.shape[1], "h": crop.shape[0], "rgb": crop.tobytes()}
+                        q.put(("messages", title, messages, rect, crops))
                 if debug_on.is_set():
                     q.put(("debug", _packet(full, area, title, reader, lines)))
         except Exception:

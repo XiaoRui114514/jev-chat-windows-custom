@@ -2,6 +2,8 @@
 """识别调试窗：把子进程送来的帧和每个 OCR 框按分类画出来，看识别到底哪儿错了。
 帧只在内存里画（QImage 拿 bytes 建），不存图、不进日志。"""
 from datetime import datetime
+import json
+from core.message.context import transcript
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPen
@@ -77,6 +79,8 @@ class DebugWindow(QWidget):
     def __init__(self, on_close=None):
         super().__init__()
         self.on_close = on_close
+        self.analysis = {}
+        self.diagnostics = []
         self.setWindowFlags(Qt.Tool)
         self.resize(900, 650)
         outer = QVBoxLayout(self)
@@ -103,6 +107,11 @@ class DebugWindow(QWidget):
         self.canvas.pkt = pkt
         self.canvas.update()
         self._show_packet_text(pkt)
+
+    def show_analysis(self, analysis, diagnostics=()):
+        self.analysis, self.diagnostics = analysis, list(diagnostics)
+        if self.canvas.pkt is not None:
+            self._show_packet_text(self.canvas.pkt)
 
     def retranslate(self):
         """按缓存帧刷新文案，保留图像和滚动位置，不重新采集或识别。"""
@@ -138,7 +147,12 @@ class DebugWindow(QWidget):
         ]
         for who, name, line in pkt.get("lines", ()):
             text.append(f"{who}({name})：{line}" if name else f"{who}：{line}")
-        text += ["", _legend()]
+        text += ["", f"消息检测耗时：{pkt.get('parser_ms', 0)} ms", "结构化消息：",
+                 json.dumps(pkt.get("messages", []), ensure_ascii=False, indent=2),
+                 "视觉 / 意图 / 总耗时：" + str({k: v for k, v in self.analysis.items() if k.endswith("_ms")}),
+                 "额外 API 调用 / 缓存：" + str({k: v for k, v in self.analysis.items() if k.endswith("_calls") or k == "cache_hits"}),
+                 "错误：" + json.dumps(self.analysis.get("errors", []) + self.diagnostics, ensure_ascii=False),
+                 "最终 LLM 上下文：", self.analysis.get("context") or transcript(pkt.get("messages", [])), "", _legend()]
         self.info.setPlainText("\n".join(text))
         stamp = datetime.fromtimestamp(pkt.get("ts") or 0).strftime("%H:%M:%S")
         self.status.setText(T("最近一帧 {stamp} · 共 {count} 个框").format(
