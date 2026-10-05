@@ -12,7 +12,13 @@ hiddenimports = [
     "app.worker", "app.capture", "app.ocr", "app.fill", "app.overlay", "app.settings",
     "app.version", "app.update", "app.debugwin",  # debugwin 是开了调试视图才 import 的
     "core.engine", "core.draft", "core.jev_client", "core.questions", "core.providers",
-    "core.llm",
+    "core.providers.base", "core.providers.registry", "core.providers.openrouter",
+    "core.providers.typesafe", "core.providers.custom_openai", "core.providers.custom_typesafe",
+    "core.providers.transport", "core.providers.answers", "core.llm",
+    "core.message", "core.message.context", "core.message.tracker",
+    "core.ocr", "core.parser", "core.parser.wechat",
+    "core.media", "core.media.cache", "core.media.vision", "core.media.analyzer",
+    "core.emoji", "core.emoji.intent",
 ]
 datas, binaries = [], []
 datas += [("docs/wechat-mp.png", "docs")]  # 设置页底部的公众号长条横幅

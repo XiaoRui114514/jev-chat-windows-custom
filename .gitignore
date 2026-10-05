@@ -16,3 +16,9 @@ wechat_probe.png
 build/
 dist/
 *.spec.bak
+
+.pytest_cache/
+*.json.tmp
+qa-output/
+private-fixtures/
+requirements-local.txt

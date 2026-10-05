@@ -4,6 +4,7 @@ numpy                         # frames are numpy arrays; chat-area detection is 
 windows-capture               # Windows Graphics Capture, captures GPU-composited windows
 PySide6-Fluent-Widgets        # overlay UI (pulls in PySide6)
 pillow                        # only for the synthetic images in probe/
+opencv-python                # local chat-region and rich-media geometry detection
 
 # model SDKs: one official client per protocol, no hand-written HTTP (see core/llm.py)
 openai                        # OpenAI Chat Completions: DeepSeek, OpenRouter, Moonshot, GLM, Qwen, ...
