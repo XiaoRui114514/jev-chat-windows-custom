@@ -8,15 +8,13 @@ def _number(value) -> float | None:
     """模型爱把数字写成字符串；认不出来就给 None，别猜。"""
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
-        return float(value) if math.isfinite(float(value)) else None
-    if isinstance(value, str):
-        try:
-            n = float(value.strip())
-            return n if math.isfinite(n) else None
-        except ValueError:
-            return None
-    return None
+    if not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _unit(value) -> float:

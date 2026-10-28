@@ -69,7 +69,7 @@ def test_invalid_or_empty_returns(server,monkeypatch,body):
 def test_partial_json_fences_and_invalid_scores():
     body={"choices":[{"message":{"content":"```json\n"+json.dumps({"answers":{"a":{"noul":"0.8"},"b":{"choice":"bad"}}})+"\n```"}}]}
     assert set(_answers_of(QUESTIONS,body))=={"a"}
-    for value in [float("nan"),float("inf"),True,10,-1,.5]:
+    for value in [float("nan"),float("inf"),True,10,-1,.5,10**400]:
         assert _answer_of(QUESTIONS["c"],{"score":value}) is None
 
 @pytest.mark.parametrize("base",["", "xxx", "https://user:key@example.com", "https://example.com?key=k"])
