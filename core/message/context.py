@@ -35,7 +35,10 @@ def message_text(message):
     return "\n".join(lines)
 
 def engine_messages(messages):
-    return [{**m, "text": message_text(m)} if isinstance(m, dict) else m for m in messages]
+    # Keep the observed text for echo filtering and the user's style samples.
+    # The annotated model context is not itself something either person said.
+    return [{**m, "observed_text": m.get("text", ""), "text": message_text(m)}
+            if isinstance(m, dict) else m for m in messages]
 
 def transcript(messages):
     lines = []
