@@ -27,7 +27,7 @@ def analyze(messages: list, relationship: str, model: str | None = None,
             timeout: float = 30, context: int = 10, provider: str = "deepseek",
             base_url: str | None = None, reply_to: str | None = None, style: str = "",
             thinking: bool = False, jev_provider: str = "openrouter",
-            jev_model: str | None = None, jev_base_url: str | None = None) -> dict:
+            jev_model: str | None = None, jev_base_url: str | None = None, checkpoint=None) -> dict:
     """messages: [(from, text)] from ∈ {her, me}，最新一条在最后；
     群聊里可以带第三项 name（说这句话的人），单聊不带。
     context: 起草和判断各看最近多少条消息（用户设置里的「参考上下文」）。
@@ -45,6 +45,8 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     三段式（issue #4）：先让 Jev 答 7 道判断题，把判断当小抄喂给起草，最后 Jev 只排序。
     判断那次挂了就退回老路：盲起草 + 判断和排序一次问完，行为跟以前一样。usage 是两次之和。
     """
+    checkpoint = checkpoint or (lambda stage: None)
+    checkpoint("判断")
     state = build_state(messages, relationship, keep=context, reply_to=reply_to)
     usage: dict = {}
     answers: dict = {}
@@ -59,6 +61,7 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     except JevError as exc:
         diagnostics.append({"stage": "judge", "status": exc.status, "error": str(exc)})
 
+    checkpoint("起草")
     candidates = draft_candidates(messages, relationship, provider=provider, model=model,
                                   base_url=base_url, timeout=timeout, keep=context,
                                   reply_to=reply_to, style=style, thinking=thinking,
@@ -69,6 +72,7 @@ def analyze(messages: list, relationship: str, model: str | None = None,
     questions = {} if judged else dict(JUDGE_QUESTIONS)
     if len(candidates) >= 2:  # 起草只给了 1 条就没什么可排的，判断题照问
         questions.update(build_rank_question(candidates))
+    checkpoint("排序")
     if questions:
         try:
             second = ask(state, questions, timeout=timeout,
@@ -81,6 +85,7 @@ def analyze(messages: list, relationship: str, model: str | None = None,
         answers = {**answers, **(second.get("answers") or {})}
         _add_usage(usage, second.get("usage"))
 
+    checkpoint("完成")
     best_key = (answers.get("best_reply") or {}).get("choice")
     best_index = _REPLY_IDX.get(best_key, 0)  # 解析不出就退第一条
     if best_index >= len(candidates):

@@ -1,5 +1,18 @@
 """Safe, shared model errors. Never echo upstream request/response bodies."""
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+_task_keys = ContextVar("task_keys", default=None)
+
+@contextmanager
+def credential_snapshot(keys):
+    token = _task_keys.set(dict(keys))
+    try:
+        yield
+    finally:
+        _task_keys.reset(token)
+
 from typing import NoReturn
 from core.providers import ENV_VARS, JEV_ENV, LEGACY
 
@@ -13,6 +26,9 @@ def redact_secrets(text: str) -> str:
     """Strip every live key from any string before print or disk write."""
     if not isinstance(text, str):
         text = str(text)
+    for key in (_task_keys.get() or {}).values():
+        if key:
+            text = text.replace(key, "[REDACTED]")
     for env in ENV_VARS:
         key = os.environ.get(env) or ""
         if key:
@@ -45,6 +61,12 @@ def _fail(exc: Exception, what: str) -> NoReturn:
 
 def _api_key(env: str = JEV_ENV) -> str:
     """两把 key 之一（JEV_API_KEY / LLM_API_KEY）。新名字空着就退回老名字，老用户不用重填。"""
+    snapshot = _task_keys.get()
+    if snapshot is not None and env in snapshot:
+        key = snapshot[env]
+        if not key:
+            raise JevError("本次任务未配置模型密钥")
+        return key
     key = ((os.environ.get(env) or "").strip()
            or (os.environ.get(LEGACY.get(env, "")) or "").strip())
     if not key:

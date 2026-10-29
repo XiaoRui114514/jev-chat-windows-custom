@@ -41,7 +41,8 @@ def run(q, hwnd, enabled, debug_on, app_key=None):
     ctypes.windll.user32.SetProcessDPIAware()
     app = chatapps.get(app_key)
     cap = None
-    readers = {}  # {会话名: Reader}，一个会话一套去重状态
+    from collections import OrderedDict
+    readers = OrderedDict()  # {会话名: Reader}，一个会话一套去重状态
     title, head = "", None  # 当前会话名 / 上一帧的头部像素
     last_area = None  # 上次发给父进程的 4 元组，变了才再发一次
     warned = False  # 消息区识别失败是否已经报过，拖窗口时别每帧刷一条
@@ -92,7 +93,12 @@ def run(q, hwnd, enabled, debug_on, app_key=None):
                         if name != title:
                             title = name
                             q.put(("chat", title))
-                    reader = readers.setdefault(title, Reader(app))
+                    if title not in readers:
+                        readers[title] = Reader(app)
+                    readers.move_to_end(title)
+                    while len(readers) > 32:
+                        readers.popitem(last=False)
+                    reader = readers[title]
                     options = settings.recognition()
                     lines = reader.read(full[y0:y1, x0:x1], bg, options)
                     new = reader.new_messages()

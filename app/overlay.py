@@ -233,13 +233,15 @@ class _ReplyCard(_Surface):
 
 class Overlay:
     def __init__(self, on_fill, on_toggle_capture=None, on_target_change=None, result_of=None,
-                 on_toggle_debug=None, on_language_changed=None):
+                 on_toggle_debug=None, on_language_changed=None, on_reanalyze=None, on_cancel=None):
         """result_of(会话名) → 那个会话上次的结果或 None；切着看别的会话时用它把旧结果放回来。
         on_target_change(会话名, 人名) → 用户在群里挑了回复对象。
         on_toggle_debug(开不开) → 开关调试视图那个独立窗口。"""
         self.app = QApplication.instance() or QApplication([])
         setTheme(Theme.LIGHT)
         setThemeColor(_GREEN, save=False)
+        self.on_cancel = on_cancel
+        self.on_reanalyze = on_reanalyze
         self.on_fill = on_fill
         self.on_toggle_capture = on_toggle_capture
         self.on_target_change = on_target_change
@@ -382,6 +384,13 @@ class Overlay:
         self.updated = _label("", 11, _MUTED)
         self.updated.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         heading.addWidget(self.updated)
+        self.reanalyzeButton = QPushButton("重新分析当前会话")
+        self.reanalyzeButton.clicked.connect(lambda: self.on_reanalyze() if self.on_reanalyze else None)
+        heading.addWidget(self.reanalyzeButton)
+        self.cancelButton = QPushButton("取消生成")
+        self.cancelButton.setEnabled(False)
+        self.cancelButton.clicked.connect(lambda: self.on_cancel() if self.on_cancel else None)
+        heading.addWidget(self.cancelButton)
         body.addLayout(heading)
         chat_row = QHBoxLayout()
         chat_row.setSpacing(8)
@@ -1032,6 +1041,7 @@ class Overlay:
 
     def set_busy(self, busy):
         self._busy = busy
+        self.cancelButton.setEnabled(busy)
         self.progress.setVisible(busy)
         if busy:
             self.invalidate_replies()
@@ -1151,6 +1161,15 @@ class Overlay:
             self.chatBox.blockSignals(False)
             self._switch_to(title)
         self._follow_text()
+
+    def forget_chat(self, title):
+        if title == self.current_chat(): return
+        self.feeds.pop(title, None)
+        index = self.chatBox.findText(title)
+        if index >= 0:
+            self.chatBox.blockSignals(True)
+            self.chatBox.removeItem(index)
+            self.chatBox.blockSignals(False)
 
     def _add_chat(self, title):
         """新会话自动进下拉框；addItem 添第一条时会自己选中，别让它触发切换。"""
