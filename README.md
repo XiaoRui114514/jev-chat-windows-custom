@@ -1,5 +1,6 @@
 # JevChat-Windows Custom
 
+[English](README.en.md) · 简体中文
 这是基于 [jev-chat/jev-chat-windows](https://github.com/jev-chat/jev-chat-windows)
 `v0.1.12` 的源码级二次开发版本，维护仓库为
 [XiaoRui114514/jev-chat-windows-custom](https://github.com/XiaoRui114514/jev-chat-windows-custom)。
